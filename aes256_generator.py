@@ -12,10 +12,32 @@ from colorama import Fore, Style
 import os
 import pyperclip
 import argparse
+import signal
+
+# ---------------------------
+# Secure primitives
+# ---------------------------
 
 def generate_ephemeral_aes256_key():
     """Generate AES-256 key in ephemeral memory and return as bytearray."""
     return bytearray(secrets.token_bytes(32))
+
+def secure_wipe(b: bytearray):
+    """Deterministically overwrite sensitive memory (random pass + zero pass)."""
+    if not isinstance(b, bytearray):
+        return
+    try:
+        mv = memoryview(b)
+        mv[:] = secrets.token_bytes(len(mv))  # random pass
+        mv[:] = b"\x00" * len(mv)             # zero pass
+        step = max(1, len(b) // 8)
+        for i in range(0, len(b), step):
+            b[i] = 0
+        del mv
+    except (TypeError, BufferError):
+        # fallback wipe
+        for i in range(len(b)):
+            b[i] = 0
 
 def clear_console():
     try:
@@ -52,21 +74,22 @@ def wait_for_keypress():
 def clipboard_self_destruct(delay=30):
     """Wipe clipboard after delay seconds."""
     def wipe():
-        time.sleep(delay)
-        pyperclip.copy("")
+        try:
+            time.sleep(delay)
+            pyperclip.copy("")
+        except pyperclip.PyperclipException:
+            pass
     threading.Thread(target=wipe, daemon=True).start()
 
 def clipboard_self_destruct_blocking(delay=30):
     """Wipe clipboard after delay seconds, blocking until done."""
     print(f"Clipboard will self-destruct in {delay} seconds...")
-    time.sleep(delay)
-    pyperclip.copy("")
-    print("Clipboard cleared.")
-
-def wipe_bytearray(b: bytearray):
-    """Overwrite sensitive memory."""
-    for i in range(len(b)):
-        b[i] = 0
+    try:
+        time.sleep(delay)
+        pyperclip.copy("")
+        print("Clipboard cleared.")
+    except pyperclip.PyperclipException:
+        print("Clipboard clear failed (best-effort).")
 
 def print_hex_from_bytes(b: bytearray):
     """Print the bytearray as hex directly without creating a permanent string."""
@@ -83,14 +106,24 @@ def progress_bar():
         time.sleep(random.uniform(0.0025, 0.01))
     print()
 
-# Initialize
+# ---------------------------
+# Initialization
+# ---------------------------
+
 clear_console()
 colorama.init()
 
 # Detect debugger
 if sys.gettrace() is not None:
     print("Debugger detected!")
-    exit()
+    sys.exit(1)
+
+# Disable core dumps (best-effort)
+try:
+    import resource
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+except (ImportError, ValueError):
+    pass
 
 # CLI argument parsing
 parser = argparse.ArgumentParser(description="AES-256 Hex Generator for DMR radios")
@@ -98,13 +131,51 @@ parser.add_argument("--count", type=int, default=8, help="Number of keys to gene
 parser.add_argument("--clipboard-delay", type=int, default=30, help="Clipboard self-destruct delay in seconds")
 args = parser.parse_args()
 
+# ---------------------------
+# Main with hardened cleanup
+# ---------------------------
+
+ephemeral_key = None
+ephemeral_hex = None
+
+def _final_cleanup():
+    """Final safety net: wipe memory and clear clipboard."""
+    if ephemeral_key is not None:
+        secure_wipe(ephemeral_key)
+    # Drop references
+    globals()['ephemeral_key'] = None
+    globals()['ephemeral_hex'] = None
+    # Clipboard best-effort clear
+    try:
+        pyperclip.copy("")
+    except pyperclip.PyperclipException:
+        pass
+    # De-init color
+    try:
+        colorama.deinit()
+    except RuntimeError:
+        pass
+
+def _signal_handler(_signum, _frame):
+    print("\nSignal received, performing secure cleanup...")
+    _final_cleanup()
+    sys.exit(1)
+
+# Trap SIGINT/SIGTERM to guarantee cleanup
+for _sig in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None)):
+    if _sig is not None:
+        try:
+            signal.signal(_sig, _signal_handler)
+        except (ValueError, OSError):
+            pass
+
 if __name__ == "__main__":
     try:
         for _ in range(args.count):
             # Generate ephemeral key
             ephemeral_key = generate_ephemeral_aes256_key()
 
-            # Display banner
+            # Display banner (styling preserved)
             print(
                 Fore.GREEN + "♦───────⟨ " +
                 Style.BRIGHT + Fore.LIGHTGREEN_EX + "AES 256-bit Hex Generator " +
@@ -117,23 +188,39 @@ if __name__ == "__main__":
 
             # Print key and copy to clipboard
             ephemeral_hex = print_hex_from_bytes(ephemeral_key)
-            pyperclip.copy(ephemeral_hex)
+            try:
+                pyperclip.copy(ephemeral_hex)
+            except pyperclip.PyperclipException:
+                print("Clipboard unavailable (best-effort).")
             clipboard_self_destruct(delay=args.clipboard_delay)
 
-            # Wipe ephemeral memory
-            wipe_bytearray(ephemeral_key)
-            del ephemeral_key
-            del ephemeral_hex
-            import gc;gc.collect()
+            # Wipe ephemeral memory immediately after use
+            secure_wipe(ephemeral_key)
+            ephemeral_key = None
+            ephemeral_hex = None
 
-            # Handle clipboard self-destruct
+            # Aggressive collection (best-effort)
+            try:
+                import gc;gc.collect()
+            except ImportError:
+                gc = None
+
+            # Handle clipboard self-destruct flow
             if args.count > 1:
                 wait_for_keypress()
-                print('\033[3J\033c')
+                print('\033[3J\033c')  # styling preserved
             else:
-                # For a single key, block until clipboard clears
                 clipboard_self_destruct_blocking(delay=args.clipboard_delay)
 
     except KeyboardInterrupt:
         print("\nGoodbye!")
-        colorama.deinit()
+        _final_cleanup()
+        sys.exit(0)
+    except (OSError, ValueError) as e:
+        # Fail closed: perform cleanup on any unexpected error
+        print(f"\nError occurred: {e}\nPerforming secure cleanup...")
+        _final_cleanup()
+        sys.exit(1)
+    finally:
+        # Final safety net
+        _final_cleanup()
