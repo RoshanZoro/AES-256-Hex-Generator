@@ -13,10 +13,69 @@ import os
 import pyperclip
 import argparse
 import signal
+import subprocess
+import ctypes
+import gc
 
 # ---------------------------
 # Secure primitives
 # ---------------------------
+
+def secure_clipboard_clear():
+    if os.name == "nt":
+        secure_clipboard_clear_windows()
+    elif sys.platform == "darwin":
+        secure_clipboard_clear_macos()
+    else:
+        secure_clipboard_clear_linux()
+
+def secure_clipboard_clear_windows():
+    try:
+        import win32clipboard  # pywin32
+        win32clipboard.OpenClipboard()
+        try:
+            win32clipboard.EmptyClipboard()
+            win32clipboard.SetClipboardText("[CLEARED]")
+            win32clipboard.EmptyClipboard()
+        finally:
+            win32clipboard.CloseClipboard()
+    except ImportError:
+        try:
+            pyperclip.copy("")
+        except pyperclip.PyperclipException:
+            print("Clipboard clear failed (pyperclip).")
+
+def secure_clipboard_clear_macos():
+    try:
+        subprocess.run(["/usr/bin/pbcopy"], input=b"", check=True)
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        try:
+            pyperclip.copy("")
+        except pyperclip.PyperclipException:
+            print("Clipboard clear failed (pyperclip).")
+
+def secure_clipboard_clear_linux():
+    cleared = False
+    try:
+        subprocess.run(["xclip", "-selection", "clipboard"], input=b"", check=True)
+        subprocess.run(["xclip", "-selection", "primary"], input=b"", check=True)
+        cleared = True
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        pass
+
+    if not cleared:
+        try:
+            subprocess.run(["xsel", "--clipboard", "--clear"], check=True)
+            subprocess.run(["xsel", "--primary", "--clear"], check=True)
+            cleared = True
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            pass
+
+    if not cleared:
+        try:
+            pyperclip.copy("")
+        except pyperclip.PyperclipException:
+            print("Clipboard clear failed (pyperclip).")
 
 def generate_ephemeral_aes256_key():
     """Generate AES-256 key in ephemeral memory and return as bytearray."""
@@ -35,9 +94,69 @@ def secure_wipe(b: bytearray):
             b[i] = 0
         del mv
     except (TypeError, BufferError):
-        # fallback wipe
         for i in range(len(b)):
             b[i] = 0
+
+def secure_wipe_strong(b: bytearray):
+    """
+    Strong zeroization using OS-native functions where available.
+    - On Windows: RtlSecureZeroMemory from ntdll.dll
+    - On Linux/macOS: explicit_bzero (libc), fallback to two-pass overwrite
+    """
+    if not isinstance(b, bytearray):
+        return
+    size = len(b)
+    if size == 0:
+        return
+
+    try:
+        addr = ctypes.addressof(ctypes.c_char.from_buffer(b))
+    except (TypeError, ValueError):
+        for i in range(len(b)):
+            b[i] = 0
+        return
+
+    if os.name == "nt":
+        try:
+            rtl_secure_zero_memory = ctypes.WinDLL("ntdll").RtlSecureZeroMemory
+            rtl_secure_zero_memory.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+            rtl_secure_zero_memory.restype = ctypes.c_void_p
+            rtl_secure_zero_memory(addr, size)
+            return
+        except (AttributeError, OSError):
+            for i in range(len(b)):
+                b[i] = 0
+            return
+
+    # Try libc explicit_bzero or memset_s inline
+    for lib_name in ("libc.so.6", "libc.dylib", "libSystem.B.dylib"):
+        try:
+            libc = ctypes.CDLL(lib_name)
+            try:
+                explicit_bzero = libc.explicit_bzero
+                explicit_bzero.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+                explicit_bzero.restype = None
+                explicit_bzero(addr, size)
+                return
+            except AttributeError:
+                pass
+            try:
+                memset_s = libc.memset_s
+                memset_s.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_size_t]
+                memset_s.restype = ctypes.c_int
+                res = memset_s(addr, size, 0, size)
+                if res == 0:
+                    return
+            except AttributeError:
+                pass
+        except OSError:
+            continue
+
+    # Fallback: random pass + zero pass
+    mv = memoryview(b)
+    mv[:] = secrets.token_bytes(size)
+    mv[:] = b"\x00" * size
+    del mv
 
 def clear_console():
     try:
@@ -141,27 +260,23 @@ ephemeral_hex = None
 def _final_cleanup():
     """Final safety net: wipe memory and clear clipboard."""
     if ephemeral_key is not None:
-        secure_wipe(ephemeral_key)
-    # Drop references
+        secure_wipe_strong(ephemeral_key)
     globals()['ephemeral_key'] = None
     globals()['ephemeral_hex'] = None
-    # Clipboard best-effort clear
     try:
-        pyperclip.copy("")
+        secure_clipboard_clear()
     except pyperclip.PyperclipException:
         pass
-    # De-init color
     try:
         colorama.deinit()
     except RuntimeError:
         pass
 
-def _signal_handler(_signum, _frame):
-    print("\nSignal received, performing secure cleanup...")
+def _signal_handler(signum, _frame):
+    print(f"\nSignal {signum} received, performing secure cleanup...")
     _final_cleanup()
     sys.exit(1)
 
-# Trap SIGINT/SIGTERM to guarantee cleanup
 for _sig in (getattr(signal, "SIGINT", None), getattr(signal, "SIGTERM", None)):
     if _sig is not None:
         try:
@@ -194,21 +309,18 @@ if __name__ == "__main__":
                 print("Clipboard unavailable (best-effort).")
             clipboard_self_destruct(delay=args.clipboard_delay)
 
-            # Wipe ephemeral memory immediately after use
-            secure_wipe(ephemeral_key)
+            # Wipe ephemeral memory immediately after use (strong wipe)
+            secure_wipe_strong(ephemeral_key)
             ephemeral_key = None
             ephemeral_hex = None
 
-            # Aggressive collection (best-effort)
-            try:
-                import gc;gc.collect()
-            except ImportError:
-                gc = None
+            # Aggressive collection
+            gc.collect()
 
             # Handle clipboard self-destruct flow
             if args.count > 1:
                 wait_for_keypress()
-                print('\033[3J\033c')  # styling preserved
+                print('\033[3J\033c')
             else:
                 clipboard_self_destruct_blocking(delay=args.clipboard_delay)
 
@@ -217,10 +329,8 @@ if __name__ == "__main__":
         _final_cleanup()
         sys.exit(0)
     except (OSError, ValueError) as e:
-        # Fail closed: perform cleanup on any unexpected error
         print(f"\nError occurred: {e}\nPerforming secure cleanup...")
         _final_cleanup()
         sys.exit(1)
     finally:
-        # Final safety net
         _final_cleanup()
