@@ -290,7 +290,7 @@ if __name__ == "__main__":
             # Generate ephemeral key
             ephemeral_key = generate_ephemeral_aes256_key()
 
-            # Display banner (styling preserved)
+            # Display banner
             print(
                 Fore.GREEN + "♦───────⟨ " +
                 Style.BRIGHT + Fore.LIGHTGREEN_EX + "AES 256-bit Hex Generator " +
