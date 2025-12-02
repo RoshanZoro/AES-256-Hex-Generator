@@ -1,5 +1,5 @@
 """
-Hex Generator for AES 256 DMR radios
+AES-256 Hex Generator for DMR Radios – Overkill Security Edition
 """
 
 import secrets
@@ -11,11 +11,11 @@ import colorama
 from colorama import Fore, Style
 import os
 import pyperclip
+import argparse
 
 def generate_ephemeral_aes256_key():
-    """Generate AES-256 key in ephemeral memory and return it as a bytearray."""
-    ephemeral_bytes = bytearray(secrets.token_bytes(32))
-    return ephemeral_bytes
+    """Generate AES-256 key in ephemeral memory and return as bytearray."""
+    return bytearray(secrets.token_bytes(32))
 
 def clear_console():
     try:
@@ -30,7 +30,6 @@ def clear_console():
 
 def wait_for_keypress():
     try:
-        # Windows
         if os.name == 'nt':
             import msvcrt
             print("Press any key to continue...\n", end='', flush=True)
@@ -38,7 +37,6 @@ def wait_for_keypress():
         else:
             import termios
             import tty
-
             print("Press any key to continue...\n", end='', flush=True)
             fd = sys.stdin.fileno()
             old_settings = termios.tcgetattr(fd)
@@ -48,7 +46,7 @@ def wait_for_keypress():
             finally:
                 termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
     except (EOFError, KeyboardInterrupt):
-        input("Press Enter to continue...\n")  # fallback
+        input("Press Enter to continue...\n")
     print()
 
 def clipboard_self_destruct(delay=30):
@@ -58,10 +56,32 @@ def clipboard_self_destruct(delay=30):
         pyperclip.copy("")
     threading.Thread(target=wipe, daemon=True).start()
 
+def clipboard_self_destruct_blocking(delay=30):
+    """Wipe clipboard after delay seconds, blocking until done."""
+    print(f"Clipboard will self-destruct in {delay} seconds...")
+    time.sleep(delay)
+    pyperclip.copy("")
+    print("Clipboard cleared.")
+
 def wipe_bytearray(b: bytearray):
     """Overwrite sensitive memory."""
-    for _ in range(len(b)):
+    for i in range(len(b)):
         b[i] = 0
+
+def print_hex_from_bytes(b: bytearray):
+    """Print the bytearray as hex directly without creating a permanent string."""
+    hex_parts = (f"{byte:02x}" for byte in b)
+    hex_str = ''.join(hex_parts)
+    print(f"[ {Style.BRIGHT}{Fore.LIGHTGREEN_EX}{hex_str}{Style.RESET_ALL} ]")
+    return hex_str  # for clipboard, only exists briefly
+
+def progress_bar():
+    for progress in range(101):
+        bar = '█' * (progress // 2) + '-' * (50 - progress // 2)
+        sys.stdout.write(f"{Style.BRIGHT}\r|{Fore.LIGHTMAGENTA_EX}{bar}{Fore.RESET}| {progress}%{Style.RESET_ALL}")
+        sys.stdout.flush()
+        time.sleep(random.uniform(0.0025, 0.01))
+    print()
 
 # Initialize
 clear_console()
@@ -72,12 +92,17 @@ if sys.gettrace() is not None:
     print("Debugger detected!")
     exit()
 
+# CLI argument parsing
+parser = argparse.ArgumentParser(description="AES-256 Hex Generator for DMR radios")
+parser.add_argument("--count", type=int, default=8, help="Number of keys to generate")
+parser.add_argument("--clipboard-delay", type=int, default=30, help="Clipboard self-destruct delay in seconds")
+args = parser.parse_args()
+
 if __name__ == "__main__":
     try:
-        while True:
+        for _ in range(args.count):
             # Generate ephemeral key
-            key_bytes = generate_ephemeral_aes256_key()
-            key_hex = key_bytes.hex()  # Temporary string for display and clipboard
+            ephemeral_key = generate_ephemeral_aes256_key()
 
             # Display banner
             print(
@@ -87,32 +112,27 @@ if __name__ == "__main__":
                 Style.RESET_ALL
             )
 
-            # Progress bar
-            for i in range(101):
-                bar = '█' * (i // 2) + '-' * (50 - i // 2)
-                sys.stdout.write(f"{Style.BRIGHT}\r|{Fore.LIGHTMAGENTA_EX}{bar}{Fore.RESET}| {i}%{Style.RESET_ALL}")
-                sys.stdout.flush()
-                time.sleep(random.uniform(0.0025, 0.01))
+            # Show progress bar
+            progress_bar()
 
-            # Display key and copy to clipboard
-            print(f"\n[ {Style.BRIGHT}{Fore.LIGHTGREEN_EX}{key_hex}{Style.RESET_ALL} ]\n"
-                  f"The key has been copied to your clipboard!")
-            pyperclip.copy(key_hex)
-
-            # Start clipboard self-destruct
-            clipboard_self_destruct(delay=30)
+            # Print key and copy to clipboard
+            ephemeral_hex = print_hex_from_bytes(ephemeral_key)
+            pyperclip.copy(ephemeral_hex)
+            clipboard_self_destruct(delay=args.clipboard_delay)
 
             # Wipe ephemeral memory
-            wipe_bytearray(key_bytes)
-            del key_bytes
-            del key_hex
-            import gc; gc.collect()
+            wipe_bytearray(ephemeral_key)
+            del ephemeral_key
+            del ephemeral_hex
+            import gc;gc.collect()
 
-            # Wait for user
-            wait_for_keypress()
-
-            # Clear screen and scrollback
-            print('\033[3J\033c')
+            # Handle clipboard self-destruct
+            if args.count > 1:
+                wait_for_keypress()
+                print('\033[3J\033c')
+            else:
+                # For a single key, block until clipboard clears
+                clipboard_self_destruct_blocking(delay=args.clipboard_delay)
 
     except KeyboardInterrupt:
         print("\nGoodbye!")
