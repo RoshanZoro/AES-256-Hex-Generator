@@ -1,2 +1,2 @@
-colorama
-pyperclip
+colorama>=0.4.6
+pyperclip>=1.8.2
