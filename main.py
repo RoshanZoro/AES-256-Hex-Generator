@@ -14,8 +14,8 @@ import pyperclip
 
 def generate_ephemeral_aes256_key():
     """Generate AES-256 key in ephemeral memory and return it as a bytearray."""
-    key_bytes = bytearray(secrets.token_bytes(32))
-    return key_bytes
+    ephemeral_bytes = bytearray(secrets.token_bytes(32))
+    return ephemeral_bytes
 
 def clear_console():
     try:
@@ -60,7 +60,7 @@ def clipboard_self_destruct(delay=30):
 
 def wipe_bytearray(b: bytearray):
     """Overwrite sensitive memory."""
-    for i in range(len(b)):
+    for _ in range(len(b)):
         b[i] = 0
 
 # Initialize
