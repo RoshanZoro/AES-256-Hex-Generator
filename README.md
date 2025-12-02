@@ -12,7 +12,7 @@ A **secure, ephemeral AES-256 key generator** for DMR radio users who want maxim
 ## Features
 
 - **AES-256 key generation** – Cryptographically secure 256-bit keys.  
-- **Multiple keys** – Generate multiple keys in one run (`--count`).  
+- **Multiple keys** – Generate multiple keys in one session (`--count`). After each key is displayed, press any key to continue to the next one.  
 - **Clipboard self-destruct** – Keys copied to clipboard are cleared automatically (`--clipboard-delay`).  
 - **Ephemeral memory handling** – Keys exist temporarily in memory and are securely wiped.  
 - **Progress bar** – Fun visual indicator while generating keys.  
@@ -46,8 +46,8 @@ pip install -r requirements.txt
 Generate **one key** (default clipboard self-destruct: 30s):
 
 ```bash
-python aes256_generator.py
-```
+python aes256_generator.py --count 1
+````
 
 Generate **multiple keys** (e.g., 5 keys) with a custom clipboard delay:
 
@@ -55,10 +55,15 @@ Generate **multiple keys** (e.g., 5 keys) with a custom clipboard delay:
 python aes256_generator.py --count 5 --clipboard-delay 60
 ```
 
+### Options
+
 * `--count` – Number of keys to generate (default: 8).
+  > **Why 8 keys by default?** Eight keys are provided as a convenient number for most users. If you only ever need up to 8 keys for your radios or devices, this default works perfectly without requiring any extra arguments.  
+
 * `--clipboard-delay` – Seconds before clipboard is cleared (default: 30).
 
----
+  > Provides a brief window to paste your key, while minimizing the risk of accidental exposure.
+
 
 ## Security Notes
 
